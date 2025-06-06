@@ -142,7 +142,7 @@ const Message = () => {
       setActiveConversation(conversation);
       loadMessages(conversation);
     } catch (error) {
-      console.error("Error creating DM:", error);
+      console.error("Error creating new DM:", error);
     }
   };
 
@@ -154,7 +154,7 @@ const Message = () => {
       setActiveConversation(group);
       loadMessages(group);
     } catch (error) {
-      console.error("Error creating group:", error);
+      console.error("Error creating groups:", error);
     }
   };
 
