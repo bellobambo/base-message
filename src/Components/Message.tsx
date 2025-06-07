@@ -60,33 +60,15 @@ const Message = () => {
       };
       setSigner(xmtpSigner);
 
-      // Initialize XMTP client with proper error handling
-      try {
-        // First try to build (resume) existing client
-        const xmtpClient = await Client.build(newAccountIdentifier, {
-          env: "dev",
-          //   signer: xmtpSigner,
-          // Skip loading old messages if they cause issues
-          //   skipContactPublishing: true,
-          //   persistConversations: false,
-        });
-        setClient(xmtpClient);
-        console.log("Resumed existing XMTP client");
-      } catch (buildError) {
-        console.warn("Could not resume client, creating new one:", buildError);
-        const newClient = await Client.create(xmtpSigner, {
-          env: "dev",
-          //   skipContactPublishing: true,
-          // Optional: Add persistence after successful creation
-          // persistConversations: true
-        });
-        setClient(newClient);
-        console.log("Created new XMTP client");
-      }
+      // Initialize XMTP client
+      const xmtpClient = await Client.create(xmtpSigner, {
+        env: "dev",
+      });
+      setClient(xmtpClient);
+      console.log("XMTP client initialized successfully");
     } catch (err) {
       console.error("Initialization error:", err);
       setError(err instanceof Error ? err.message : "Unknown error");
-      // Clear any potentially corrupted client states
       setClient(null);
     } finally {
       setLoading(false);
@@ -97,15 +79,15 @@ const Message = () => {
     return /^0x[a-fA-F0-9]{40}$/.test(address);
   };
 
-  const checkContactReachability = async (address: string) => {
+  const checkContactReachability = async (address: any) => {
     if (!client) return false;
     try {
+      // Create proper Identifier object
       const identifier: Identifier = {
         identifier: address,
         identifierKind: "Ethereum",
       };
-      const response: any = await Client.canMessage([identifier]);
-      return response.get(identifier) === true;
+      return await client.canMessage([identifier]);
     } catch (error) {
       console.error("Error checking reachability:", error);
       return false;
@@ -120,19 +102,36 @@ const Message = () => {
       return;
     }
 
-    const isReachable = await checkContactReachability(newContactAddress);
-    if (!isReachable) {
-      alert("This address is not reachable on XMTP");
+    const normalizedAddress = newContactAddress.toLowerCase();
+    if (contacts.some((c) => c.identity.toLowerCase() === normalizedAddress)) {
+      alert("Contact already exists");
       return;
     }
 
-    const newContact: Contact = {
-      identity: newContactAddress,
-      inboxId: newContactAddress,
-    };
+    try {
+      setLoading(true);
+      const isReachable = await checkContactReachability(newContactAddress);
 
-    setContacts([...contacts, newContact]);
-    setNewContactAddress("");
+      if (!isReachable) {
+        alert(
+          "This address is not reachable on XMTP. The user may need to activate their XMTP identity."
+        );
+        return;
+      }
+
+      const newContact: Contact = {
+        identity: newContactAddress,
+        inboxId: newContactAddress,
+      };
+
+      setContacts((prev) => [...prev, newContact]);
+      setNewContactAddress("");
+    } catch (error) {
+      console.error("Error adding contact:", error);
+      alert("Failed to add contact. Please try again.");
+    } finally {
+      setLoading(false);
+    }
   };
 
   const createNewDM = async (contact: Contact) => {
