@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import { ethers } from "ethers";
 import { Client, type Signer, type Identifier } from "@xmtp/browser-sdk";
 
@@ -11,6 +11,14 @@ declare global {
 interface Contact {
   identity: string;
   inboxId: string;
+}
+
+interface OptimisticMessage {
+  id: string;
+  content: string;
+  senderAddress: string;
+  status: "unpublished" | "published" | "failed";
+  sentAt: Date;
 }
 
 const Message = () => {
@@ -26,6 +34,35 @@ const Message = () => {
   const [activeConversation, setActiveConversation] = useState<any>(null);
   const [messageContent, setMessageContent] = useState("");
   const [conversationMessages, setConversationMessages] = useState<any[]>([]);
+  const [optimisticMessages, setOptimisticMessages] = useState<
+    OptimisticMessage[]
+  >([]);
+  const [isSending, setIsSending] = useState(false);
+
+  // Effect to listen for new messages
+  useEffect(() => {
+    if (!client || !activeConversation) return;
+
+    const streamMessages = async () => {
+      const stream = await activeConversation.streamMessages();
+      for await (const message of stream) {
+        // Check if this message is already in our state
+        if (
+          !conversationMessages.some((m) => m.id === message.id) &&
+          !optimisticMessages.some((m) => m.id === message.id)
+        ) {
+          setConversationMessages((prev) => [...prev, message]);
+        }
+      }
+    };
+
+    streamMessages().catch(console.error);
+
+    return () => {
+      // Clean up the stream when component unmounts or conversation changes
+      // Note: Actual cleanup depends on XMTP SDK implementation
+    };
+  }, [client, activeConversation, conversationMessages, optimisticMessages]);
 
   const connectWallet = async () => {
     setLoading(true);
@@ -158,13 +195,45 @@ const Message = () => {
   };
 
   const sendMessage = async () => {
-    if (!activeConversation || !messageContent.trim()) return;
+    if (!activeConversation || !messageContent.trim() || isSending) return;
+
+    setIsSending(true);
+    const tempId = `optimistic-${Date.now()}`;
+    const optimisticMessage: OptimisticMessage = {
+      id: tempId,
+      content: messageContent,
+      senderAddress: accountIdentifier?.identifier || "",
+      status: "unpublished",
+      sentAt: new Date(),
+    };
+
     try {
-      await activeConversation.send(messageContent);
+      // 1. Optimistically add to UI immediately
+      setOptimisticMessages((prev) => [...prev, optimisticMessage]);
       setMessageContent("");
-      loadMessages(activeConversation);
+
+      // 2. Actually send the message to the network
+      await activeConversation.send(messageContent);
+
+      // 3. Update status to published
+      setOptimisticMessages((prev) =>
+        prev.map((msg) =>
+          msg.id === tempId ? { ...msg, status: "published" } : msg
+        )
+      );
+
+      // 4. Refresh messages to get the actual message from the network
+      await loadMessages(activeConversation);
     } catch (error) {
       console.error("Error sending message:", error);
+      // Update status to failed
+      setOptimisticMessages((prev) =>
+        prev.map((msg) =>
+          msg.id === tempId ? { ...msg, status: "failed" } : msg
+        )
+      );
+    } finally {
+      setIsSending(false);
     }
   };
 
@@ -173,9 +242,48 @@ const Message = () => {
     try {
       const messages = await conversation.messages();
       setConversationMessages(messages);
+
+      // Remove optimistic messages that have been successfully published
+      setOptimisticMessages((prev) =>
+        prev.filter((msg) => msg.status !== "published")
+      );
     } catch (error) {
       console.error("Error loading messages:", error);
     }
+  };
+
+  const retryFailedMessage = async (messageId: string) => {
+    const failedMessage = optimisticMessages.find(
+      (msg) => msg.id === messageId
+    );
+    if (!failedMessage) return;
+
+    setOptimisticMessages((prev) =>
+      prev.map((msg) =>
+        msg.id === messageId ? { ...msg, status: "unpublished" } : msg
+      )
+    );
+
+    try {
+      await activeConversation.send(failedMessage.content);
+      setOptimisticMessages((prev) =>
+        prev.map((msg) =>
+          msg.id === messageId ? { ...msg, status: "published" } : msg
+        )
+      );
+      await loadMessages(activeConversation);
+    } catch (error) {
+      console.error("Error retrying message:", error);
+      setOptimisticMessages((prev) =>
+        prev.map((msg) =>
+          msg.id === messageId ? { ...msg, status: "failed" } : msg
+        )
+      );
+    }
+  };
+
+  const cancelFailedMessage = (messageId: string) => {
+    setOptimisticMessages((prev) => prev.filter((msg) => msg.id !== messageId));
   };
 
   if (!accountIdentifier || !signer || !client) {
@@ -202,6 +310,18 @@ const Message = () => {
       </div>
     );
   }
+
+  // Combine actual messages and optimistic messages for display
+  const allMessages = [
+    ...conversationMessages,
+    ...optimisticMessages.map((msg) => ({
+      id: msg.id,
+      content: msg.content,
+      senderAddress: msg.senderAddress,
+      sent: msg.sentAt,
+      status: msg.status,
+    })),
+  ].sort((a, b) => new Date(a.sent).getTime() - new Date(b.sent).getTime());
 
   return (
     <div style={{ display: "flex", height: "100vh" }}>
@@ -292,10 +412,34 @@ const Message = () => {
             </div>
 
             <div style={{ flex: 1, overflowY: "auto", padding: "16px" }}>
-              {conversationMessages.map((message, index) => (
-                <div key={index} style={{ marginBottom: "8px" }}>
+              {allMessages.map((message, index) => (
+                <div
+                  key={message.id || index}
+                  style={{
+                    marginBottom: "8px",
+                    opacity: message.status === "failed" ? 0.7 : 1,
+                  }}
+                >
                   <strong>{message.senderAddress}: </strong>
                   <span>{message.content}</span>
+                  {message.status === "unpublished" && (
+                    <span style={{ marginLeft: "8px", color: "#888" }}>
+                      (Sending...)
+                    </span>
+                  )}
+                  {message.status === "failed" && (
+                    <span style={{ marginLeft: "8px" }}>
+                      <button
+                        onClick={() => retryFailedMessage(message.id)}
+                        style={{ marginRight: "4px" }}
+                      >
+                        Retry
+                      </button>
+                      <button onClick={() => cancelFailedMessage(message.id)}>
+                        Cancel
+                      </button>
+                    </span>
+                  )}
                 </div>
               ))}
             </div>
@@ -306,9 +450,14 @@ const Message = () => {
                 onChange={(e) => setMessageContent(e.target.value)}
                 placeholder="Type your message..."
                 style={{ width: "100%", minHeight: "60px", padding: "8px" }}
+                disabled={isSending}
               />
-              <button onClick={sendMessage} style={{ marginTop: "8px" }}>
-                Send
+              <button
+                onClick={sendMessage}
+                style={{ marginTop: "8px" }}
+                disabled={!messageContent.trim() || isSending}
+              >
+                {isSending ? "Sending..." : "Send"}
               </button>
             </div>
           </>
