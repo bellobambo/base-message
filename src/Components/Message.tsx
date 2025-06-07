@@ -86,7 +86,7 @@ const Message = () => {
     } catch (err) {
       console.error("Initialization error:", err);
       setError(err instanceof Error ? err.message : "Unknown error");
-      // Clear any potentially corrupted client state
+      // Clear any potentially corrupted client states
       setClient(null);
     } finally {
       setLoading(false);
