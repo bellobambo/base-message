@@ -44,19 +44,23 @@ const Message = () => {
     if (!client || !activeConversation) return;
 
     const streamMessages = async () => {
-      const stream = await activeConversation.streamMessages();
-      for await (const message of stream) {
-        // Check if this message is already in our state
-        if (
-          !conversationMessages.some((m) => m.id === message.id) &&
-          !optimisticMessages.some((m) => m.id === message.id)
-        ) {
-          setConversationMessages((prev) => [...prev, message]);
+      try {
+        const stream = await activeConversation.streamMessages();
+        for await (const message of stream) {
+          // Check if this message is already in our state
+          if (
+            !conversationMessages.some((m) => m.id === message.id) &&
+            !optimisticMessages.some((m) => m.id === message.id)
+          ) {
+            setConversationMessages((prev) => [...prev, message]);
+          }
         }
+      } catch (error) {
+        console.error("Error streaming messages:", error);
       }
     };
 
-    streamMessages().catch(console.error);
+    streamMessages();
 
     return () => {
       // Clean up the stream when component unmounts or conversation changes
@@ -116,10 +120,9 @@ const Message = () => {
     return /^0x[a-fA-F0-9]{40}$/.test(address);
   };
 
-  const checkContactReachability = async (address: any) => {
+  const checkContactReachability = async (address: string) => {
     if (!client) return false;
     try {
-      // Create proper Identifier object
       const identifier: Identifier = {
         identifier: address,
         identifierKind: "Ethereum",
@@ -163,6 +166,9 @@ const Message = () => {
 
       setContacts((prev) => [...prev, newContact]);
       setNewContactAddress("");
+
+      // Automatically create and open DM with the new contact
+      await createNewDM(newContact);
     } catch (error) {
       console.error("Error adding contact:", error);
       alert("Failed to add contact. Please try again.");
@@ -256,7 +262,7 @@ const Message = () => {
     const failedMessage = optimisticMessages.find(
       (msg) => msg.id === messageId
     );
-    if (!failedMessage) return;
+    if (!failedMessage || !activeConversation) return;
 
     setOptimisticMessages((prev) =>
       prev.map((msg) =>
@@ -363,8 +369,9 @@ const Message = () => {
           <button
             onClick={addContact}
             style={{ marginTop: "8px", width: "100%" }}
+            disabled={loading}
           >
-            Add Contact
+            {loading ? "Adding..." : "Add Contact"}
           </button>
         </div>
 
@@ -412,36 +419,42 @@ const Message = () => {
             </div>
 
             <div style={{ flex: 1, overflowY: "auto", padding: "16px" }}>
-              {allMessages.map((message, index) => (
-                <div
-                  key={message.id || index}
-                  style={{
-                    marginBottom: "8px",
-                    opacity: message.status === "failed" ? 0.7 : 1,
-                  }}
-                >
-                  <strong>{message.senderAddress}: </strong>
-                  <span>{message.content}</span>
-                  {message.status === "unpublished" && (
-                    <span style={{ marginLeft: "8px", color: "#888" }}>
-                      (Sending...)
-                    </span>
-                  )}
-                  {message.status === "failed" && (
-                    <span style={{ marginLeft: "8px" }}>
-                      <button
-                        onClick={() => retryFailedMessage(message.id)}
-                        style={{ marginRight: "4px" }}
-                      >
-                        Retry
-                      </button>
-                      <button onClick={() => cancelFailedMessage(message.id)}>
-                        Cancel
-                      </button>
-                    </span>
-                  )}
+              {allMessages.length === 0 ? (
+                <div style={{ textAlign: "center", marginTop: "20px" }}>
+                  <p>No messages yet. Start the conversation!</p>
                 </div>
-              ))}
+              ) : (
+                allMessages.map((message, index) => (
+                  <div
+                    key={message.id || index}
+                    style={{
+                      marginBottom: "8px",
+                      opacity: message.status === "failed" ? 0.7 : 1,
+                    }}
+                  >
+                    <strong>{message.senderAddress}: </strong>
+                    <span>{message.content}</span>
+                    {message.status === "unpublished" && (
+                      <span style={{ marginLeft: "8px", color: "#888" }}>
+                        (Sending...)
+                      </span>
+                    )}
+                    {message.status === "failed" && (
+                      <span style={{ marginLeft: "8px" }}>
+                        <button
+                          onClick={() => retryFailedMessage(message.id)}
+                          style={{ marginRight: "4px" }}
+                        >
+                          Retry
+                        </button>
+                        <button onClick={() => cancelFailedMessage(message.id)}>
+                          Cancel
+                        </button>
+                      </span>
+                    )}
+                  </div>
+                ))
+              )}
             </div>
 
             <div style={{ padding: "16px", borderTop: "1px solid #ccc" }}>
@@ -451,6 +464,12 @@ const Message = () => {
                 placeholder="Type your message..."
                 style={{ width: "100%", minHeight: "60px", padding: "8px" }}
                 disabled={isSending}
+                onKeyPress={(e) => {
+                  if (e.key === "Enter" && !e.shiftKey) {
+                    e.preventDefault();
+                    sendMessage();
+                  }
+                }}
               />
               <button
                 onClick={sendMessage}
@@ -468,9 +487,18 @@ const Message = () => {
               justifyContent: "center",
               alignItems: "center",
               height: "100%",
+              flexDirection: "column",
             }}
           >
             <p>Select a contact or create a group to start chatting</p>
+            {contacts.length > 0 && (
+              <button
+                onClick={() => createNewDM(contacts[0])}
+                style={{ marginTop: "16px" }}
+              >
+                Start chatting with {contacts[0].identity}
+              </button>
+            )}
           </div>
         )}
       </div>
